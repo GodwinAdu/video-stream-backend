@@ -31,29 +31,27 @@ interface ConnectionHealth {
  */
 export const initSocket = (server: HttpServer): Server => {
     const io = new Server(server, {
-        cors: {
-            origin: "*",
-        },
-        transports: ["polling", "websocket"],
-        allowEIO3: true,
-        pingTimeout: 60000,
-        pingInterval: 25000,
-        upgradeTimeout: 30000,
-        maxHttpBufferSize: 1e6,
+        cors: { origin: "*" },
+        transports: ["websocket", "polling"],
+        pingTimeout: 30000,
+        pingInterval: 15000,
+        upgradeTimeout: 10000,
+        maxHttpBufferSize: 5e5,
         allowUpgrades: true,
         cookie: false,
         serveClient: false,
-        path: "/socket.io/",
-        connectTimeout: 45000,
+        connectTimeout: 20000,
     })
 
-    // Enhanced data storage with cleanup mechanisms
-    const connectedUsers = new Map<string, User>() // socket.id -> User
-    const userSessions = new Map<string, Set<string>>() // userName -> Set<socket.id>
-    const rooms = new Map<string, Set<string>>() // roomId -> Set<socket.id>
-    const typingUsers = new Map<string, NodeJS.Timeout>() // For future typing indicators if re-added
+    // Optimized data storage
+    const connectedUsers = new Map<string, User>()
+    const userSessions = new Map<string, Set<string>>()
+    const rooms = new Map<string, Set<string>>()
     const connectionHealth = new Map<string, ConnectionHealth>()
-    const messageBuffer = new Map<string, any[]>() // Buffer messages for reconnection
+    
+    // Room limits for scalability
+    const MAX_ROOM_SIZE = 50
+    const MAX_TOTAL_USERS = 1000
 
     // Utility functions
     const generateUserId = (): string => Math.random().toString(36).substr(2, 9)
@@ -198,52 +196,32 @@ export const initSocket = (server: HttpServer): Server => {
         // Log but don't shutdown for unhandled rejections
     })
 
-    // Memory management and cleanup
+    // Optimized cleanup
     const performCleanup = (): void => {
         const now = Date.now()
-        const staleThreshold = 10 * 60 * 1000 // 10 minutes
-        let cleanedCount = 0
+        const staleThreshold = 5 * 60 * 1000 // 5 minutes
+        let cleaned = 0
 
-        // Clean up stale connections
-        connectionHealth.forEach((health, socketId) => {
-
+        // Clean stale connections
+        for (const [socketId, health] of connectionHealth) {
             if (now - health.lastPing > staleThreshold) {
                 connectionHealth.delete(socketId)
                 connectedUsers.delete(socketId)
-                typingUsers.delete(socketId)
-                cleanedCount++
+                cleaned++
             }
-        })
-
-        // Clean up empty sessions
-        rooms.forEach((users, roomId) => {
-
-            if (users.size === 0) {
-
-                rooms.delete(roomId)
-            }
-        })
-
-        // Clean up message buffers
-        messageBuffer.forEach((messages, userId) => {
-
-            if (messages.length > 100) {
-                messageBuffer.set(userId, messages.slice(-50))
-            }
-        })
-
-        if (cleanedCount > 0) {
-            console.log(`🧹 Cleaned up ${cleanedCount} stale connections`)
         }
 
-        // Force garbage collection if available
-        if (global.gc) {
-            global.gc()
+        // Clean empty rooms
+        for (const [roomId, users] of rooms) {
+            if (users.size === 0) rooms.delete(roomId)
         }
+
+        if (cleaned > 0) console.log(`🧹 Cleaned ${cleaned} stale connections`)
+        if (global.gc) global.gc()
     }
 
-    // Run cleanup every 2 minutes
-    setInterval(performCleanup, 120000)
+    // Run cleanup every minute
+    setInterval(performCleanup, 60000)
 
     // Enhanced connection handling
     io.on("connection", (socket: Socket) => {
@@ -261,32 +239,34 @@ export const initSocket = (server: HttpServer): Server => {
             features: ["typing-indicators", "reactions", "presence", "reconnection"],
         })
 
-        // WebRTC: Join Room with duplicate connection handling
+        // Optimized join room with limits
         socket.on("join-room", ({ roomId, userName }) => {
-            // Check for existing connections from the same user
-            const existingSessions = userSessions.get(userName) || new Set()
+            // Check server capacity
+            if (connectedUsers.size >= MAX_TOTAL_USERS) {
+                socket.emit("join-error", { message: "Server at capacity" })
+                return
+            }
             
-            // If user already has connections, disconnect old ones
-            if (existingSessions.size > 0) {
-                console.log(`🔄 User ${userName} reconnecting, disconnecting ${existingSessions.size} old sessions`)
-                existingSessions.forEach(oldSocketId => {
-                    const oldSocket = io.sockets.sockets.get(oldSocketId)
-                    if (oldSocket && oldSocket.id !== socket.id) {
-                        oldSocket.emit("force-disconnect", {
-                            reason: "duplicate-connection",
-                            message: "You have connected from another device/tab",
-                            timestamp: getCurrentTimestamp()
-                        })
-                        oldSocket.disconnect(true)
+            // Check room capacity
+            const roomSockets = rooms.get(roomId) || new Set()
+            if (roomSockets.size >= MAX_ROOM_SIZE) {
+                socket.emit("join-error", { message: "Room is full" })
+                return
+            }
+            
+            // Handle existing sessions efficiently
+            const existingSessions = userSessions.get(userName)
+            if (existingSessions?.size) {
+                existingSessions.forEach(oldId => {
+                    if (oldId !== socket.id) {
+                        io.sockets.sockets.get(oldId)?.disconnect(true)
                     }
                 })
-                // Clear old sessions
                 existingSessions.clear()
             }
             
-            // Add current session
-            existingSessions.add(socket.id)
-            userSessions.set(userName, existingSessions)
+            (userSessions.get(userName) || new Set()).add(socket.id)
+            userSessions.set(userName, userSessions.get(userName) || new Set())
             
             socket.join(roomId)
             const newUser: User = {
@@ -349,22 +329,17 @@ export const initSocket = (server: HttpServer): Server => {
             console.log(`✅ ${userName} (${socket.id}) joined room: ${roomId} (${totalParticipants} participants)${isFirstInRoom ? ' [HOST]' : ''}`)
         })
 
-        // WebRTC: Offer
-        socket.on("offer", ({ offer, targetId, senderId }) => {
-            socket.to(targetId).emit("offer", { offer, senderId })
-            // console.log(`Offer from ${senderId} to ${targetId}`)
+        // Optimized WebRTC signaling
+        socket.on("offer", ({ offer, targetId }) => {
+            socket.to(targetId).emit("offer", { offer, senderId: socket.id })
         })
 
-        // WebRTC: Answer
-        socket.on("answer", ({ answer, targetId, senderId }) => {
-            socket.to(targetId).emit("answer", { answer, senderId })
-            // console.log(`Answer from ${senderId} to ${targetId}`)
+        socket.on("answer", ({ answer, targetId }) => {
+            socket.to(targetId).emit("answer", { answer, senderId: socket.id })
         })
 
-        // WebRTC: ICE Candidate
-        socket.on("ice-candidate", ({ candidate, targetId, senderId }) => {
-            socket.to(targetId).emit("ice-candidate", { candidate, senderId })
-            // console.log(`ICE candidate from ${senderId} to ${targetId}`)
+        socket.on("ice-candidate", ({ candidate, targetId }) => {
+            socket.to(targetId).emit("ice-candidate", { candidate, senderId: socket.id })
         })
 
         // WebRTC: Mute Toggle
@@ -413,12 +388,94 @@ export const initSocket = (server: HttpServer): Server => {
 
         // WebRTC: Chat Message
         socket.on("chat-message", ({ message, senderId, timestamp }) => {
-
             const user = connectedUsers.get(senderId)
             if (user) {
                 // Broadcast chat message to everyone in the room
                 io.to(user.roomId).emit("chat-message", { message, senderId, userName: user.name, timestamp })
                 console.log(`Chat message from ${user.name}: ${message}`)
+            }
+        })
+
+        // Typing indicators
+        socket.on("typing", ({ isTyping }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user) {
+                socket.to(user.roomId).emit("user-typing", { 
+                    userName: user.name, 
+                    isTyping 
+                })
+            }
+        })
+
+        // Host Controls
+        socket.on("host-mute-participant", ({ participantId, mute }) => {
+            const host = connectedUsers.get(socket.id)
+            const participant = connectedUsers.get(participantId)
+            if (host?.isHost && participant && host.roomId === participant.roomId) {
+                participant.isMuted = mute
+                io.to(participant.roomId).emit("participant-force-muted", { participantId, mute })
+                console.log(`Host ${host.name} ${mute ? 'muted' : 'unmuted'} ${participant.name}`)
+            }
+        })
+
+        socket.on("host-toggle-video", ({ participantId, videoOff }) => {
+            const host = connectedUsers.get(socket.id)
+            const participant = connectedUsers.get(participantId)
+            if (host?.isHost && participant && host.roomId === participant.roomId) {
+                participant.isVideoOff = videoOff
+                io.to(participant.roomId).emit("participant-force-video-toggle", { participantId, videoOff })
+                console.log(`Host ${host.name} ${videoOff ? 'disabled' : 'enabled'} video for ${participant.name}`)
+            }
+        })
+
+        socket.on("host-remove-participant", ({ participantId }) => {
+            const host = connectedUsers.get(socket.id)
+            const participant = connectedUsers.get(participantId)
+            if (host?.isHost && participant && host.roomId === participant.roomId) {
+                const targetSocket = io.sockets.sockets.get(participantId)
+                if (targetSocket) {
+                    targetSocket.emit("force-disconnect", {
+                        reason: "removed-by-host",
+                        message: `You were removed from the meeting by ${host.name}`
+                    })
+                    targetSocket.disconnect(true)
+                    console.log(`Host ${host.name} removed ${participant.name} from meeting`)
+                }
+            }
+        })
+
+        socket.on("host-transfer", ({ newHostId }) => {
+            const currentHost = connectedUsers.get(socket.id)
+            const newHost = connectedUsers.get(newHostId)
+            if (currentHost?.isHost && newHost && currentHost.roomId === newHost.roomId) {
+                currentHost.isHost = false
+                newHost.isHost = true
+                connectedUsers.set(socket.id, currentHost)
+                connectedUsers.set(newHostId, newHost)
+                io.to(currentHost.roomId).emit("host-changed", {
+                    newHostId,
+                    newHostName: newHost.name,
+                    previousHostId: socket.id
+                })
+                console.log(`Host transferred from ${currentHost.name} to ${newHost.name}`)
+            }
+        })
+
+        socket.on("rename-participant", ({ participantId, newName }) => {
+            const requester = connectedUsers.get(socket.id)
+            const participant = connectedUsers.get(participantId)
+            if (participant && requester && 
+                (requester.isHost || participantId === socket.id) && 
+                requester.roomId === participant.roomId) {
+                const oldName = participant.name
+                participant.name = newName
+                connectedUsers.set(participantId, participant)
+                io.to(participant.roomId).emit("participant-renamed", {
+                    participantId,
+                    oldName,
+                    newName
+                })
+                console.log(`${oldName} renamed to ${newName}`)
             }
         })
 
