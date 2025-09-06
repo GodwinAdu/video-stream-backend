@@ -47,6 +47,7 @@ export const initSocket = (server: HttpServer): Server => {
     const connectedUsers = new Map<string, User>()
     const userSessions = new Map<string, Set<string>>()
     const rooms = new Map<string, Set<string>>()
+    const roomHosts = new Map<string, string>() // roomId -> hostSocketId
     const connectionHealth = new Map<string, ConnectionHealth>()
 
     // Room limits for scalability
@@ -288,10 +289,11 @@ export const initSocket = (server: HttpServer): Server => {
             }
             roomSockets.add(socket.id)
 
-            // Check if user should be host (first in room or rejoining as host)
+            // Only room creator becomes host
             const isFirstInRoom = roomSockets.size === 1
             if (isFirstInRoom) {
                 newUser.isHost = true
+                roomHosts.set(roomId, socket.id)
                 connectedUsers.set(socket.id, newUser)
             }
 
@@ -449,6 +451,7 @@ export const initSocket = (server: HttpServer): Server => {
             if (currentHost?.isHost && newHost && currentHost.roomId === newHost.roomId) {
                 currentHost.isHost = false
                 newHost.isHost = true
+                roomHosts.set(currentHost.roomId, newHostId)
                 connectedUsers.set(socket.id, currentHost)
                 connectedUsers.set(newHostId, newHost)
                 io.to(currentHost.roomId).emit("host-changed", {
@@ -560,6 +563,7 @@ export const initSocket = (server: HttpServer): Server => {
 
                         if (roomSockets.size === 0) {
                             rooms.delete(user.roomId)
+                            roomHosts.delete(user.roomId)
                             console.log(`🏠 Room ${user.roomId} closed (empty)`)
                         }
                     }
