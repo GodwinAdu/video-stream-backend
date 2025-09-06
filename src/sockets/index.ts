@@ -48,7 +48,7 @@ export const initSocket = (server: HttpServer): Server => {
     const userSessions = new Map<string, Set<string>>()
     const rooms = new Map<string, Set<string>>()
     const connectionHealth = new Map<string, ConnectionHealth>()
-    
+
     // Room limits for scalability
     const MAX_ROOM_SIZE = 50
     const MAX_TOTAL_USERS = 1000
@@ -246,14 +246,14 @@ export const initSocket = (server: HttpServer): Server => {
                 socket.emit("join-error", { message: "Server at capacity" })
                 return
             }
-            
+
             // Check room capacity
             const roomSockets = rooms.get(roomId) || new Set()
             if (roomSockets.size >= MAX_ROOM_SIZE) {
                 socket.emit("join-error", { message: "Room is full" })
                 return
             }
-            
+
             // Handle existing sessions efficiently
             const existingSessions = userSessions.get(userName)
             if (existingSessions?.size) {
@@ -264,10 +264,10 @@ export const initSocket = (server: HttpServer): Server => {
                 })
                 existingSessions.clear()
             }
-            
+
             (userSessions.get(userName) || new Set()).add(socket.id)
             userSessions.set(userName, userSessions.get(userName) || new Set())
-            
+
             socket.join(roomId)
             const newUser: User = {
                 id: socket.id,
@@ -286,7 +286,6 @@ export const initSocket = (server: HttpServer): Server => {
             if (!rooms.has(roomId)) {
                 rooms.set(roomId, new Set())
             }
-            const roomSockets = rooms.get(roomId)!
             roomSockets.add(socket.id)
 
             // Check if user should be host (first in room or rejoining as host)
@@ -400,9 +399,9 @@ export const initSocket = (server: HttpServer): Server => {
         socket.on("typing", ({ isTyping }) => {
             const user = connectedUsers.get(socket.id)
             if (user) {
-                socket.to(user.roomId).emit("user-typing", { 
-                    userName: user.name, 
-                    isTyping 
+                socket.to(user.roomId).emit("user-typing", {
+                    userName: user.name,
+                    isTyping
                 })
             }
         })
@@ -464,8 +463,8 @@ export const initSocket = (server: HttpServer): Server => {
         socket.on("rename-participant", ({ participantId, newName }) => {
             const requester = connectedUsers.get(socket.id)
             const participant = connectedUsers.get(participantId)
-            if (participant && requester && 
-                (requester.isHost || participantId === socket.id) && 
+            if (participant && requester &&
+                (requester.isHost || participantId === socket.id) &&
                 requester.roomId === participant.roomId) {
                 const oldName = participant.name
                 participant.name = newName
@@ -515,7 +514,6 @@ export const initSocket = (server: HttpServer): Server => {
                     serverTime: Date.now(),
                     userData: user,
                     connectionHealth: health,
-                    bufferedMessages: messageBuffer.get(socket.id) || [],
                 })
             } catch (error) {
                 console.error("❌ Error in reconnect-request:", error)
@@ -529,10 +527,7 @@ export const initSocket = (server: HttpServer): Server => {
                 const user = connectedUsers.get(socket.id)
                 if (user) {
                     // Clear typing timeout (if implemented)
-                    if (typingUsers.has(socket.id)) {
-                        clearTimeout(typingUsers.get(socket.id)!)
-                        typingUsers.delete(socket.id)
-                    }
+                    // Clear any typing timeouts if needed
 
                     // Remove from user sessions
                     const userSessionSet = userSessions.get(user.name)
@@ -547,7 +542,7 @@ export const initSocket = (server: HttpServer): Server => {
                     const roomSockets = rooms.get(user.roomId)
                     if (roomSockets) {
                         roomSockets.delete(socket.id)
-                        
+
                         // If user was host and others remain, transfer host to next user
                         if (user.isHost && roomSockets.size > 0) {
                             const nextHostId = Array.from(roomSockets)[0]
@@ -562,7 +557,7 @@ export const initSocket = (server: HttpServer): Server => {
                                 console.log(`👑 Host transferred to ${nextHost.name} (${nextHostId})`)
                             }
                         }
-                        
+
                         if (roomSockets.size === 0) {
                             rooms.delete(user.roomId)
                             console.log(`🏠 Room ${user.roomId} closed (empty)`)
@@ -586,7 +581,6 @@ export const initSocket = (server: HttpServer): Server => {
                     // Keep user data for potential reconnection (for 2 minutes)
                     setTimeout(() => {
                         connectedUsers.delete(socket.id)
-                        messageBuffer.delete(socket.id)
                     }, 2 * 60 * 1000)
                 }
                 connectionHealth.delete(socket.id)
