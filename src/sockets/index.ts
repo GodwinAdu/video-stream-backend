@@ -248,8 +248,13 @@ export const initSocket = (server: HttpServer): Server => {
                 return
             }
 
+            // Get or create room
+            if (!rooms.has(roomId)) {
+                rooms.set(roomId, new Set())
+            }
+            const roomSockets = rooms.get(roomId)!
+            
             // Check room capacity
-            const roomSockets = rooms.get(roomId) || new Set()
             if (roomSockets.size >= MAX_ROOM_SIZE) {
                 socket.emit("join-error", { message: "Room is full" })
                 return
@@ -270,6 +275,10 @@ export const initSocket = (server: HttpServer): Server => {
             userSessions.set(userName, userSessions.get(userName) || new Set())
 
             socket.join(roomId)
+            
+            // Check if this is the first user (room creator)
+            const isRoomCreator = roomSockets.size === 0
+            
             const newUser: User = {
                 id: socket.id,
                 name: userName,
@@ -279,22 +288,16 @@ export const initSocket = (server: HttpServer): Server => {
                 status: "online",
                 isMuted: false,
                 isVideoOff: false,
-                isHost: false,
+                isHost: isRoomCreator,
                 isRaiseHand: false,
             }
-            connectedUsers.set(socket.id, newUser)
-
-            if (!rooms.has(roomId)) {
-                rooms.set(roomId, new Set())
-            }
+            
+            // Add to room and set host
             roomSockets.add(socket.id)
-
-            // Only room creator becomes host
-            const isFirstInRoom = roomSockets.size === 1
-            if (isFirstInRoom) {
-                newUser.isHost = true
+            connectedUsers.set(socket.id, newUser)
+            
+            if (isRoomCreator) {
                 roomHosts.set(roomId, socket.id)
-                connectedUsers.set(socket.id, newUser)
             }
 
             // 1. Notify existing users about the new user
@@ -327,7 +330,7 @@ export const initSocket = (server: HttpServer): Server => {
             const totalParticipants = roomSockets.size
             io.to(roomId).emit("participant-count", totalParticipants)
 
-            console.log(`✅ ${userName} (${socket.id}) joined room: ${roomId} (${totalParticipants} participants)${isFirstInRoom ? ' [HOST]' : ''}`)
+            console.log(`✅ ${userName} (${socket.id}) joined room: ${roomId} (${totalParticipants} participants)${isRoomCreator ? ' [HOST]' : ''}`)
         })
 
         // Optimized WebRTC signaling
@@ -552,6 +555,7 @@ export const initSocket = (server: HttpServer): Server => {
                             const nextHost = connectedUsers.get(nextHostId)
                             if (nextHost) {
                                 nextHost.isHost = true
+                                roomHosts.set(user.roomId, nextHostId)
                                 connectedUsers.set(nextHostId, nextHost)
                                 io.to(user.roomId).emit("host-changed", {
                                     newHostId: nextHostId,
