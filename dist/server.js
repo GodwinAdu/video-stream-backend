@@ -14,16 +14,10 @@ const server = (0, http_1.createServer)(app);
 exports.server = server;
 // Enhanced CORS configuration
 app.use((0, cors_1.default)({
-    origin: [
-        "http://localhost:3000",
-        "https://carpentary2025.vercel.app",
-        /\.vercel\.app$/,
-        /\.netlify\.app$/,
-        /\.render\.com$/,
-    ],
+    origin: "*",
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    allowedHeaders: ["*"],
 }));
 app.use(express_1.default.json({ limit: "10mb" }));
 app.use(express_1.default.urlencoded({ extended: true, limit: "10mb" }));

@@ -49,6 +49,7 @@ export const initSocket = (server: HttpServer): Server => {
 
     // Enhanced data storage with cleanup mechanisms
     const connectedUsers = new Map<string, User>() // socket.id -> User
+    const userSessions = new Map<string, Set<string>>() // userName -> Set<socket.id>
     const rooms = new Map<string, Set<string>>() // roomId -> Set<socket.id>
     const typingUsers = new Map<string, NodeJS.Timeout>() // For future typing indicators if re-added
     const connectionHealth = new Map<string, ConnectionHealth>()
@@ -260,8 +261,33 @@ export const initSocket = (server: HttpServer): Server => {
             features: ["typing-indicators", "reactions", "presence", "reconnection"],
         })
 
-        // WebRTC: Join Room
+        // WebRTC: Join Room with duplicate connection handling
         socket.on("join-room", ({ roomId, userName }) => {
+            // Check for existing connections from the same user
+            const existingSessions = userSessions.get(userName) || new Set()
+            
+            // If user already has connections, disconnect old ones
+            if (existingSessions.size > 0) {
+                console.log(`🔄 User ${userName} reconnecting, disconnecting ${existingSessions.size} old sessions`)
+                existingSessions.forEach(oldSocketId => {
+                    const oldSocket = io.sockets.sockets.get(oldSocketId)
+                    if (oldSocket && oldSocket.id !== socket.id) {
+                        oldSocket.emit("force-disconnect", {
+                            reason: "duplicate-connection",
+                            message: "You have connected from another device/tab",
+                            timestamp: getCurrentTimestamp()
+                        })
+                        oldSocket.disconnect(true)
+                    }
+                })
+                // Clear old sessions
+                existingSessions.clear()
+            }
+            
+            // Add current session
+            existingSessions.add(socket.id)
+            userSessions.set(userName, existingSessions)
+            
             socket.join(roomId)
             const newUser: User = {
                 id: socket.id,
@@ -282,6 +308,13 @@ export const initSocket = (server: HttpServer): Server => {
             }
             const roomSockets = rooms.get(roomId)!
             roomSockets.add(socket.id)
+
+            // Check if user should be host (first in room or rejoining as host)
+            const isFirstInRoom = roomSockets.size === 1
+            if (isFirstInRoom) {
+                newUser.isHost = true
+                connectedUsers.set(socket.id, newUser)
+            }
 
             // 1. Notify existing users about the new user
             socket.to(roomId).emit("user-joined", {
@@ -313,7 +346,7 @@ export const initSocket = (server: HttpServer): Server => {
             const totalParticipants = roomSockets.size
             io.to(roomId).emit("participant-count", totalParticipants)
 
-            console.log(`${userName} (${socket.id}) joined room: ${roomId} (${totalParticipants} participants)`)
+            console.log(`✅ ${userName} (${socket.id}) joined room: ${roomId} (${totalParticipants} participants)${isFirstInRoom ? ' [HOST]' : ''}`)
         })
 
         // WebRTC: Offer
@@ -432,26 +465,50 @@ export const initSocket = (server: HttpServer): Server => {
             }
         })
 
-        // Enhanced disconnection handling
+        // Enhanced disconnection handling with session cleanup
         socket.on("disconnect", (reason) => {
             try {
-
                 console.log(`❌ Client disconnected: ${socket.id}, reason: ${reason}`)
                 const user = connectedUsers.get(socket.id)
                 if (user) {
                     // Clear typing timeout (if implemented)
                     if (typingUsers.has(socket.id)) {
-
                         clearTimeout(typingUsers.get(socket.id)!)
                         typingUsers.delete(socket.id)
+                    }
+
+                    // Remove from user sessions
+                    const userSessionSet = userSessions.get(user.name)
+                    if (userSessionSet) {
+                        userSessionSet.delete(socket.id)
+                        if (userSessionSet.size === 0) {
+                            userSessions.delete(user.name)
+                        }
                     }
 
                     // Remove from room tracking
                     const roomSockets = rooms.get(user.roomId)
                     if (roomSockets) {
                         roomSockets.delete(socket.id)
+                        
+                        // If user was host and others remain, transfer host to next user
+                        if (user.isHost && roomSockets.size > 0) {
+                            const nextHostId = Array.from(roomSockets)[0]
+                            const nextHost = connectedUsers.get(nextHostId)
+                            if (nextHost) {
+                                nextHost.isHost = true
+                                connectedUsers.set(nextHostId, nextHost)
+                                io.to(user.roomId).emit("host-changed", {
+                                    newHostId: nextHostId,
+                                    newHostName: nextHost.name
+                                })
+                                console.log(`👑 Host transferred to ${nextHost.name} (${nextHostId})`)
+                            }
+                        }
+                        
                         if (roomSockets.size === 0) {
                             rooms.delete(user.roomId)
+                            console.log(`🏠 Room ${user.roomId} closed (empty)`)
                         }
                     }
 
@@ -467,16 +524,13 @@ export const initSocket = (server: HttpServer): Server => {
                     const userRoomSockets = rooms.get(user.roomId)
                     const participantCount = userRoomSockets ? userRoomSockets.size : 0
                     io.to(user.roomId).emit("participant-count", participantCount)
-                    console.log(`👋 ${user.name} left room: ${user.roomId}`)
+                    console.log(`👋 ${user.name} left room: ${user.roomId} (${participantCount} remaining)`)
 
-                    // Keep user data for potential reconnection (for 5 minutes)
-                    setTimeout(
-                        () => {
-                            connectedUsers.delete(socket.id)
-                            messageBuffer.delete(socket.id)
-                        },
-                        5 * 60 * 1000,
-                    )
+                    // Keep user data for potential reconnection (for 2 minutes)
+                    setTimeout(() => {
+                        connectedUsers.delete(socket.id)
+                        messageBuffer.delete(socket.id)
+                    }, 2 * 60 * 1000)
                 }
                 connectionHealth.delete(socket.id)
             } catch (error) {

@@ -10,38 +10,19 @@ const socket_io_1 = require("socket.io");
 const initSocket = (server) => {
     const io = new socket_io_1.Server(server, {
         cors: {
-            origin: "*", // Allow all origins for testing
-            methods: ["GET", "POST"],
-            credentials: true,
+            origin: "*",
         },
-        // Enhanced transport settings for Render stability
-        transports: ["websocket", "polling"],
+        transports: ["polling", "websocket"],
         allowEIO3: true,
-        // Optimized connection settings for cloud deployment
-        pingTimeout: 180000, // 3 minutes - increased for Render
-        pingInterval: 25000, // 25 seconds
-        upgradeTimeout: 45000, // 45 seconds for slower connections
-        maxHttpBufferSize: 1e6, // 1MB
-        // Enhanced compression for better performance
-        perMessageDeflate: {
-            threshold: 1024,
-            concurrencyLimit: 10,
-            memLevel: 7,
-            serverMaxWindowBits: 15,
-            clientMaxWindowBits: 15,
-        },
-        // Connection management optimizations
+        pingTimeout: 60000,
+        pingInterval: 25000,
+        upgradeTimeout: 30000,
+        maxHttpBufferSize: 1e6,
         allowUpgrades: true,
         cookie: false,
-        // Additional stability settings
         serveClient: false,
         path: "/socket.io/",
         connectTimeout: 45000,
-        // Engine.IO specific settings for Render
-        allowRequest: (req, callback) => {
-            // Add custom validation if needed
-            callback(null, true);
-        },
     });
     // Enhanced data storage with cleanup mechanisms
     const connectedUsers = new Map(); // socket.id -> User
@@ -229,7 +210,7 @@ const initSocket = (server) => {
                 status: "online",
                 isMuted: false,
                 isVideoOff: false,
-                isHost: false, // Host logic can be added here
+                isHost: false,
                 isRaiseHand: false,
             };
             connectedUsers.set(socket.id, newUser);
@@ -262,7 +243,10 @@ const initSocket = (server) => {
                 };
             });
             socket.emit("current-participants", currentParticipants);
-            console.log(`${userName} (${socket.id}) joined room: ${roomId}`);
+            // 3. Send updated participant count to all users in room
+            const totalParticipants = roomSockets.size;
+            io.to(roomId).emit("participant-count", totalParticipants);
+            console.log(`${userName} (${socket.id}) joined room: ${roomId} (${totalParticipants} participants)`);
         });
         // WebRTC: Offer
         socket.on("offer", ({ offer, targetId, senderId }) => {
@@ -390,9 +374,10 @@ const initSocket = (server) => {
                         timestamp: getCurrentTimestamp(),
                         reason: reason,
                     });
-                    // Update user count
-                    const remainingUsers = Array.from(connectedUsers.values()).filter((u) => u.roomId === user.roomId && u.id !== socket.id);
-                    io.to(user.roomId).emit("user-count", remainingUsers.length);
+                    // Update participant count
+                    const userRoomSockets = rooms.get(user.roomId);
+                    const participantCount = userRoomSockets ? userRoomSockets.size : 0;
+                    io.to(user.roomId).emit("participant-count", participantCount);
                     console.log(`👋 ${user.name} left room: ${user.roomId}`);
                     // Keep user data for potential reconnection (for 5 minutes)
                     setTimeout(() => {
