@@ -1,7 +1,11 @@
 import express from "express"
 import { createServer } from "http"
 import cors from "cors"
+import cookieParser from "cookie-parser"
 import { initSocket } from "./sockets"
+import authRoutes from "./routes/auth"
+import meetingRoutes from "./routes/meetings"
+import { connectDatabase } from "./config/database"
 
 
 const app = express()
@@ -10,15 +14,20 @@ const server = createServer(app)
 // Enhanced CORS configuration
 app.use(
     cors({
-        origin: "*",
+        origin: process.env.CORS_ORIGIN || "http://localhost:3000",
         credentials: true,
         methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allowedHeaders: ["*"],
+        allowedHeaders: ["Content-Type", "Authorization"],
     }),
 )
 
+app.use(cookieParser())
 app.use(express.json({ limit: "10mb" }))
 app.use(express.urlencoded({ extended: true, limit: "10mb" }))
+
+// Auth routes
+app.use('/api/auth', authRoutes)
+app.use('/api/meetings', meetingRoutes)
 
 // Initialize Socket.IO with enhanced stability
 const io = initSocket(server)
@@ -119,11 +128,14 @@ app.use((req, res) => {
 const PORT = process.env.PORT || 4000
 
 // Enhanced server startup
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
     console.log(`🚀 Enhanced Server running on port ${PORT}`)
     console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`)
     console.log(`📊 Process ID: ${process.pid}`)
     console.log(`💾 Node version: ${process.version}`)
+
+    // Connect to MongoDB
+    await connectDatabase()
 
     // Log initial memory usage
     const memUsage = process.memoryUsage()

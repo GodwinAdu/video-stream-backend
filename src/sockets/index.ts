@@ -242,6 +242,18 @@ export const initSocket = (server: HttpServer): Server => {
 
         // Optimized join room with limits
         socket.on("join-room", ({ roomId, userName }) => {
+            // Validate inputs
+            if (!roomId || !userName || typeof roomId !== 'string' || typeof userName !== 'string') {
+                socket.emit("join-error", { message: "Invalid room ID or username" })
+                return
+            }
+
+            // Ensure username is not a room ID format
+            if (userName.includes('-') && userName.length > 10) {
+                socket.emit("join-error", { message: "Invalid username format" })
+                return
+            }
+
             // Check server capacity
             if (connectedUsers.size >= MAX_TOTAL_USERS) {
                 socket.emit("join-error", { message: "Server at capacity" })
@@ -260,19 +272,43 @@ export const initSocket = (server: HttpServer): Server => {
                 return
             }
 
-            // Handle existing sessions efficiently
+            // Handle existing sessions efficiently - disconnect old sessions for same user
             const existingSessions = userSessions.get(userName)
             if (existingSessions?.size) {
+                console.log(`🔄 Disconnecting ${existingSessions.size} existing sessions for ${userName}`)
                 existingSessions.forEach(oldId => {
                     if (oldId !== socket.id) {
-                        io.sockets.sockets.get(oldId)?.disconnect(true)
+                        const oldSocket = io.sockets.sockets.get(oldId)
+                        if (oldSocket) {
+                            // Notify room about user leaving
+                            oldSocket.to(roomId).emit("user-left", {
+                                participantId: oldId,
+                                userName: userName,
+                                timestamp: getCurrentTimestamp(),
+                                reason: "duplicate-session",
+                            })
+                            
+                            // Remove from room and clean up
+                            const oldUser = connectedUsers.get(oldId)
+                            if (oldUser) {
+                                const oldRoomSockets = rooms.get(oldUser.roomId)
+                                if (oldRoomSockets) {
+                                    oldRoomSockets.delete(oldId)
+                                }
+                                connectedUsers.delete(oldId)
+                            }
+                            oldSocket.disconnect(true)
+                        }
                     }
                 })
                 existingSessions.clear()
             }
 
-            (userSessions.get(userName) || new Set()).add(socket.id)
-            userSessions.set(userName, userSessions.get(userName) || new Set())
+            // Add new session
+            if (!userSessions.has(userName)) {
+                userSessions.set(userName, new Set())
+            }
+            userSessions.get(userName)!.add(socket.id)
 
             socket.join(roomId)
             
@@ -310,7 +346,7 @@ export const initSocket = (server: HttpServer): Server => {
                 isRaiseHand: newUser.isRaiseHand,
             })
 
-            // 2. Send current participants to the new user
+            // 2. Send current participants to the new user (exclude self)
             const currentParticipants = Array.from(roomSockets)
                 .filter((id) => id !== socket.id)
                 .map((id) => {
@@ -594,6 +630,146 @@ export const initSocket = (server: HttpServer): Server => {
                 connectionHealth.delete(socket.id)
             } catch (error) {
                 console.error("❌ Error in disconnect:", error)
+            }
+        })
+
+        // Breakout Rooms
+        socket.on("start-breakout-rooms", ({ rooms, duration }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user?.isHost) {
+                io.to(user.roomId).emit("breakout-rooms-created", { rooms })
+                io.to(user.roomId).emit("breakout-rooms-started", { duration })
+                
+                // Assign participants to breakout rooms
+                rooms.forEach((room: any) => {
+                    room.participants.forEach((participantId: string) => {
+                        io.to(participantId).emit("assigned-to-breakout-room", { roomId: room.id })
+                    })
+                })
+                console.log(`🏠 Breakout rooms started by ${user.name}`)
+            }
+        })
+
+        socket.on("end-breakout-rooms", () => {
+            const user = connectedUsers.get(socket.id)
+            if (user?.isHost) {
+                io.to(user.roomId).emit("breakout-rooms-ended")
+                console.log(`🏠 Breakout rooms ended by ${user.name}`)
+            }
+        })
+
+        // Polls
+        socket.on("create-poll", ({ poll }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user?.isHost) {
+                io.to(user.roomId).emit("poll-created", { poll })
+                console.log(`📊 Poll created by ${user.name}: ${poll.question}`)
+            }
+        })
+
+        socket.on("vote-poll", ({ pollId, participantId, optionIndex }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user) {
+                io.to(user.roomId).emit("poll-vote", { pollId, participantId, optionIndex })
+                console.log(`📊 Vote received for poll ${pollId}`)
+            }
+        })
+
+        socket.on("end-poll", ({ pollId }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user?.isHost) {
+                io.to(user.roomId).emit("poll-ended", { pollId })
+                console.log(`📊 Poll ${pollId} ended by ${user.name}`)
+            }
+        })
+
+        // Whiteboard
+        socket.on("whiteboard-draw", ({ action }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user) {
+                socket.to(user.roomId).emit("whiteboard-draw", { action })
+            }
+        })
+
+        socket.on("whiteboard-clear", () => {
+            const user = connectedUsers.get(socket.id)
+            if (user) {
+                socket.to(user.roomId).emit("whiteboard-clear")
+                console.log(`🎨 Whiteboard cleared by ${user.name}`)
+            }
+        })
+
+        // File Sharing
+        socket.on("share-file", ({ file }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user) {
+                socket.to(user.roomId).emit("file-shared", { file })
+                console.log(`📎 File shared by ${user.name}: ${file.name}`)
+            }
+        })
+
+        socket.on("delete-file", ({ fileId }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user) {
+                io.to(user.roomId).emit("file-deleted", { fileId })
+                console.log(`📎 File deleted: ${fileId}`)
+            }
+        })
+
+        // Q&A
+        socket.on("ask-question", ({ question }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user) {
+                socket.to(user.roomId).emit("question-asked", { question })
+                console.log(`❓ Question asked by ${user.name}`)
+            }
+        })
+
+        socket.on("upvote-question", ({ questionId, participantId }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user) {
+                io.to(user.roomId).emit("question-upvoted", { questionId, participantId })
+            }
+        })
+
+        socket.on("answer-question", ({ questionId, answer, answeredBy }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user?.isHost) {
+                io.to(user.roomId).emit("question-answered", { questionId, answer, answeredBy })
+                console.log(`✅ Question answered by ${user.name}`)
+            }
+        })
+
+        // Security
+        socket.on("toggle-meeting-lock", ({ locked }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user?.isHost) {
+                io.to(user.roomId).emit("meeting-locked", { locked })
+                console.log(`🔒 Meeting ${locked ? 'locked' : 'unlocked'} by ${user.name}`)
+            }
+        })
+
+        socket.on("toggle-waiting-room", ({ enabled }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user?.isHost) {
+                io.to(user.roomId).emit("waiting-room-toggled", { enabled })
+                console.log(`🚪 Waiting room ${enabled ? 'enabled' : 'disabled'} by ${user.name}`)
+            }
+        })
+
+        socket.on("toggle-screen-share-restriction", ({ restricted }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user?.isHost) {
+                io.to(user.roomId).emit("screen-share-restricted", { restricted })
+                console.log(`🖥️ Screen share ${restricted ? 'restricted' : 'unrestricted'} by ${user.name}`)
+            }
+        })
+
+        socket.on("toggle-chat-restriction", ({ restricted }) => {
+            const user = connectedUsers.get(socket.id)
+            if (user?.isHost) {
+                io.to(user.roomId).emit("chat-restricted", { restricted })
+                console.log(`💬 Chat ${restricted ? 'restricted' : 'unrestricted'} by ${user.name}`)
             }
         })
 
