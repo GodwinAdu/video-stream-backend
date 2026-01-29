@@ -1,5 +1,13 @@
 import os from 'os'
-import type { RtpCodecCapability } from 'mediasoup/node/lib/RtpParameters'
+
+// MediaSoup codec configuration type
+interface RtpCodecCapability {
+  kind: 'audio' | 'video'
+  mimeType: string
+  clockRate: number
+  channels?: number
+  parameters?: Record<string, any>
+}
 
 export const config = {
   listenIp: '0.0.0.0',
