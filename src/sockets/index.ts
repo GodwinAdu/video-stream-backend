@@ -272,35 +272,43 @@ export const initSocket = (server: HttpServer): Server => {
                 return
             }
 
-            // Handle existing sessions efficiently - disconnect old sessions for same user
+            // Handle existing sessions - force disconnect old sessions SYNCHRONOUSLY
             const existingSessions = userSessions.get(userName)
             if (existingSessions?.size) {
-                console.log(`🔄 Disconnecting ${existingSessions.size} existing sessions for ${userName}`)
-                existingSessions.forEach(oldId => {
+                console.log(`🔄 Force disconnecting ${existingSessions.size} existing sessions for ${userName}`)
+                const oldSessionIds = Array.from(existingSessions)
+                oldSessionIds.forEach(oldId => {
                     if (oldId !== socket.id) {
-                        const oldSocket = io.sockets.sockets.get(oldId)
-                        if (oldSocket) {
-                            // Notify room about user leaving
-                            oldSocket.to(roomId).emit("user-left", {
+                        // Clean up old session IMMEDIATELY before disconnect
+                        const oldUser = connectedUsers.get(oldId)
+                        if (oldUser) {
+                            // Remove from room
+                            const oldRoomSockets = rooms.get(oldUser.roomId)
+                            if (oldRoomSockets) {
+                                oldRoomSockets.delete(oldId)
+                            }
+                            // Remove from connectedUsers
+                            connectedUsers.delete(oldId)
+                            // Remove from connectionHealth
+                            connectionHealth.delete(oldId)
+                            
+                            // Notify room BEFORE disconnect
+                            io.to(oldUser.roomId).emit("user-left", {
                                 participantId: oldId,
                                 userName: userName,
                                 timestamp: getCurrentTimestamp(),
                                 reason: "duplicate-session",
                             })
-                            
-                            // Remove from room and clean up
-                            const oldUser = connectedUsers.get(oldId)
-                            if (oldUser) {
-                                const oldRoomSockets = rooms.get(oldUser.roomId)
-                                if (oldRoomSockets) {
-                                    oldRoomSockets.delete(oldId)
-                                }
-                                connectedUsers.delete(oldId)
-                            }
+                        }
+                        
+                        // Now disconnect the socket
+                        const oldSocket = io.sockets.sockets.get(oldId)
+                        if (oldSocket) {
                             oldSocket.disconnect(true)
                         }
                     }
                 })
+                // Clear the session set
                 existingSessions.clear()
             }
 
@@ -493,10 +501,16 @@ export const initSocket = (server: HttpServer): Server => {
                 roomHosts.set(currentHost.roomId, newHostId)
                 connectedUsers.set(socket.id, currentHost)
                 connectedUsers.set(newHostId, newHost)
+                
+                // Broadcast to all including the new host
                 io.to(currentHost.roomId).emit("host-changed", {
                     newHostId,
                     newHostName: newHost.name,
-                    previousHostId: socket.id
+                    previousHostId: socket.id,
+                    participants: Array.from(rooms.get(currentHost.roomId) || []).map(id => ({
+                        id,
+                        isHost: id === newHostId
+                    }))
                 })
                 console.log(`Host transferred from ${currentHost.name} to ${newHost.name}`)
             }
@@ -595,7 +609,12 @@ export const initSocket = (server: HttpServer): Server => {
                                 connectedUsers.set(nextHostId, nextHost)
                                 io.to(user.roomId).emit("host-changed", {
                                     newHostId: nextHostId,
-                                    newHostName: nextHost.name
+                                    newHostName: nextHost.name,
+                                    previousHostId: socket.id,
+                                    participants: Array.from(roomSockets).map(id => ({
+                                        id,
+                                        isHost: id === nextHostId
+                                    }))
                                 })
                                 console.log(`👑 Host transferred to ${nextHost.name} (${nextHostId})`)
                             }
@@ -622,10 +641,8 @@ export const initSocket = (server: HttpServer): Server => {
                     io.to(user.roomId).emit("participant-count", participantCount)
                     console.log(`👋 ${user.name} left room: ${user.roomId} (${participantCount} remaining)`)
 
-                    // Keep user data for potential reconnection (for 2 minutes)
-                    setTimeout(() => {
-                        connectedUsers.delete(socket.id)
-                    }, 2 * 60 * 1000)
+                    // Remove user immediately to prevent duplicates on rejoin
+                    connectedUsers.delete(socket.id)
                 }
                 connectionHealth.delete(socket.id)
             } catch (error) {
@@ -770,6 +787,23 @@ export const initSocket = (server: HttpServer): Server => {
             if (user?.isHost) {
                 io.to(user.roomId).emit("chat-restricted", { restricted })
                 console.log(`💬 Chat ${restricted ? 'restricted' : 'unrestricted'} by ${user.name}`)
+            }
+        })
+
+        // Screen sharing events
+        socket.on("screen-share-started", ({ participantId }) => {
+            const user = connectedUsers.get(participantId)
+            if (user) {
+                socket.to(user.roomId).emit("screen-share-started", { participantId })
+                console.log(`🖥️ ${user.name} started screen sharing`)
+            }
+        })
+
+        socket.on("screen-share-stopped", ({ participantId }) => {
+            const user = connectedUsers.get(participantId)
+            if (user) {
+                socket.to(user.roomId).emit("screen-share-stopped", { participantId })
+                console.log(`🖥️ ${user.name} stopped screen sharing`)
             }
         })
 
