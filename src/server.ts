@@ -11,10 +11,31 @@ import { connectDatabase } from "./config/database"
 const app = express()
 const server = createServer(app)
 
-// Enhanced CORS configuration
+// Enhanced CORS configuration for production
+const allowedOrigins = [
+    process.env.CORS_ORIGIN || "http://localhost:3000",
+    "http://localhost:3000",
+    "http://localhost:3001",
+]
+
+// Add production frontend URL if provided
+if (process.env.FRONTEND_URL) {
+    allowedOrigins.push(process.env.FRONTEND_URL)
+}
+
 app.use(
     cors({
-        origin: process.env.CORS_ORIGIN || "http://localhost:3000",
+        origin: (origin, callback) => {
+            // Allow requests with no origin (mobile apps, Postman, etc.)
+            if (!origin) return callback(null, true)
+            
+            if (allowedOrigins.some(allowed => origin.startsWith(allowed))) {
+                callback(null, true)
+            } else {
+                console.warn(`⚠️ CORS blocked origin: ${origin}`)
+                callback(new Error('Not allowed by CORS'))
+            }
+        },
         credentials: true,
         methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allowedHeaders: ["Content-Type", "Authorization"],
