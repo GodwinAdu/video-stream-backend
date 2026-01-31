@@ -31,7 +31,11 @@ interface ConnectionHealth {
  */
 export const initSocket = (server: HttpServer): Server => {
     const io = new Server(server, {
-        cors: { origin: "*" },
+        cors: { 
+            origin: process.env.NODE_ENV === 'production' ? '*' : "*",
+            credentials: true,
+            methods: ["GET", "POST"]
+        },
         transports: ["websocket", "polling"],
         pingTimeout: 30000,
         pingInterval: 15000,

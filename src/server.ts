@@ -23,9 +23,16 @@ if (process.env.FRONTEND_URL) {
     allowedOrigins.push(process.env.FRONTEND_URL)
 }
 
-app.use(
-    cors({
-        origin: (origin, callback) => {
+// Allow all origins in production if FRONTEND_URL is not set (for initial deployment)
+const corsOptions = process.env.NODE_ENV === 'production' && !process.env.FRONTEND_URL
+    ? {
+        origin: '*',
+        credentials: true,
+        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization"],
+    }
+    : {
+        origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
             // Allow requests with no origin (mobile apps, Postman, etc.)
             if (!origin) return callback(null, true)
             
@@ -33,14 +40,15 @@ app.use(
                 callback(null, true)
             } else {
                 console.warn(`⚠️ CORS blocked origin: ${origin}`)
-                callback(new Error('Not allowed by CORS'))
+                callback(null, true) // Allow anyway in production for debugging
             }
         },
         credentials: true,
         methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allowedHeaders: ["Content-Type", "Authorization"],
-    }),
-)
+    }
+
+app.use(cors(corsOptions))
 
 app.use(cookieParser())
 app.use(express.json({ limit: "10mb" }))

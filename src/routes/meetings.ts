@@ -29,8 +29,12 @@ router.get('/check/:meetingId', async (req: any, res) => {
   try {
     const meeting = await Meeting.findOne({ meetingId: req.params.meetingId })
     
+    // If meeting not found, it's an instant meeting - allow it
     if (!meeting) {
-      return res.status(404).json({ error: 'Meeting not found' })
+      return res.status(200).json({ 
+        meeting: null,
+        isInstant: true
+      })
     }
     
     const now = new Date()
@@ -51,11 +55,16 @@ router.get('/check/:meetingId', async (req: any, res) => {
         duration: meeting.duration,
         status,
         settings: meeting.settings
-      }
+      },
+      isInstant: false
     })
   } catch (error) {
     console.error('Error checking meeting:', error)
-    res.status(500).json({ error: 'Failed to check meeting' })
+    // On error, allow as instant meeting
+    res.status(200).json({ 
+      meeting: null,
+      isInstant: true
+    })
   }
 })
 
