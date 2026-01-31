@@ -807,6 +807,24 @@ export const initSocket = (server: HttpServer): Server => {
             }
         })
 
+        // Host spotlight control
+        socket.on("host-spotlight-participant", ({ participantId }) => {
+            const host = connectedUsers.get(socket.id)
+            const participant = connectedUsers.get(participantId)
+            if (host?.isHost && participant && host.roomId === participant.roomId) {
+                io.to(host.roomId).emit("participant-spotlighted", { participantId, participantName: participant.name })
+                console.log(`🌟 Host ${host.name} spotlighted ${participant.name}`)
+            }
+        })
+
+        socket.on("host-remove-spotlight", () => {
+            const host = connectedUsers.get(socket.id)
+            if (host?.isHost) {
+                io.to(host.roomId).emit("spotlight-removed")
+                console.log(`🌟 Host ${host.name} removed spotlight`)
+            }
+        })
+
         // Enhanced error handling
         socket.on("error", (error) => {
             console.error(`❌ Socket error for ${socket.id}:`, error)
