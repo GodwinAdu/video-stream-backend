@@ -48,6 +48,7 @@ export const initSocket = (server: HttpServer): Server => {
     const userSessions = new Map<string, Set<string>>()
     const rooms = new Map<string, Set<string>>()
     const roomHosts = new Map<string, string>() // roomId -> hostSocketId
+    const roomCreators = new Map<string, string>() // roomId -> creator userId (from auth)
     const connectionHealth = new Map<string, ConnectionHealth>()
 
     // Room limits for scalability
@@ -241,7 +242,7 @@ export const initSocket = (server: HttpServer): Server => {
         })
 
         // Optimized join room with limits
-        socket.on("join-room", ({ roomId, userName }) => {
+        socket.on("join-room", ({ roomId, userName, userId }) => {
             // Validate inputs
             if (!roomId || !userName || typeof roomId !== 'string' || typeof userName !== 'string') {
                 socket.emit("join-error", { message: "Invalid room ID or username" })
@@ -263,6 +264,11 @@ export const initSocket = (server: HttpServer): Server => {
             // Get or create room
             if (!rooms.has(roomId)) {
                 rooms.set(roomId, new Set())
+                // If this is a new room and userId is provided, mark them as creator
+                if (userId) {
+                    roomCreators.set(roomId, userId)
+                    console.log(`🎬 Room ${roomId} created by user ${userId}`)
+                }
             }
             const roomSockets = rooms.get(roomId)!
             
@@ -320,11 +326,15 @@ export const initSocket = (server: HttpServer): Server => {
 
             socket.join(roomId)
             
-            // Determine host status: first user in room OR if no host exists
+            // Determine host status:
+            // 1. If user is the room creator (userId matches), they become host
+            // 2. If room is empty (first user), they become host
+            // 3. If no current host exists, first user becomes host
             const isRoomCreator = roomSockets.size === 0
+            const isCreator = userId && roomCreators.get(roomId) === userId
             const currentHostId = roomHosts.get(roomId)
             const currentHostExists = currentHostId && connectedUsers.has(currentHostId)
-            const shouldBeHost = isRoomCreator || !currentHostExists
+            const shouldBeHost = isCreator || isRoomCreator || !currentHostExists
             
             const newUser: User = {
                 id: socket.id,
@@ -344,8 +354,17 @@ export const initSocket = (server: HttpServer): Server => {
             connectedUsers.set(socket.id, newUser)
             
             if (shouldBeHost) {
+                // If user is creator and there's an existing host, transfer host role
+                if (isCreator && currentHostExists && currentHostId !== socket.id) {
+                    const oldHost = connectedUsers.get(currentHostId)
+                    if (oldHost) {
+                        oldHost.isHost = false
+                        connectedUsers.set(currentHostId, oldHost)
+                        console.log(`👑 Host role transferred from ${oldHost.name} to creator ${userName}`)
+                    }
+                }
                 roomHosts.set(roomId, socket.id)
-                console.log(`👑 ${userName} (${socket.id}) is now the host of room ${roomId}`)
+                console.log(`👑 ${userName} (${socket.id}) is now the host of room ${roomId}${isCreator ? ' [CREATOR]' : ''}`)
             }
 
             // 1. Notify existing users about the new user with explicit host status
@@ -635,6 +654,7 @@ export const initSocket = (server: HttpServer): Server => {
                         if (roomSockets.size === 0) {
                             rooms.delete(user.roomId)
                             roomHosts.delete(user.roomId)
+                            roomCreators.delete(user.roomId) // Clean up creator mapping
                             console.log(`🏠 Room ${user.roomId} closed (empty)`)
                         }
                     }
@@ -807,7 +827,9 @@ export const initSocket = (server: HttpServer): Server => {
             const user = connectedUsers.get(participantId)
             if (user) {
                 socket.to(user.roomId).emit("screen-share-started", { participantId })
-                console.log(`🖥️ ${user.name} started screen sharing`)
+                // Automatically spotlight the screen sharer
+                io.to(user.roomId).emit("participant-spotlighted", { participantId, participantName: user.name })
+                console.log(`🖥️ ${user.name} started screen sharing (auto-spotlighted)`)
             }
         })
 
@@ -815,7 +837,9 @@ export const initSocket = (server: HttpServer): Server => {
             const user = connectedUsers.get(participantId)
             if (user) {
                 socket.to(user.roomId).emit("screen-share-stopped", { participantId })
-                console.log(`🖥️ ${user.name} stopped screen sharing`)
+                // Automatically remove spotlight when screen sharing stops
+                io.to(user.roomId).emit("spotlight-removed")
+                console.log(`🖥️ ${user.name} stopped screen sharing (spotlight removed)`)
             }
         })
 
