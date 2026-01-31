@@ -320,8 +320,11 @@ export const initSocket = (server: HttpServer): Server => {
 
             socket.join(roomId)
             
-            // Check if this is the first user (room creator)
+            // Determine host status: first user in room OR if no host exists
             const isRoomCreator = roomSockets.size === 0
+            const currentHostId = roomHosts.get(roomId)
+            const currentHostExists = currentHostId && connectedUsers.has(currentHostId)
+            const shouldBeHost = isRoomCreator || !currentHostExists
             
             const newUser: User = {
                 id: socket.id,
@@ -332,7 +335,7 @@ export const initSocket = (server: HttpServer): Server => {
                 status: "online",
                 isMuted: false,
                 isVideoOff: false,
-                isHost: isRoomCreator,
+                isHost: shouldBeHost,
                 isRaiseHand: false,
             }
             
@@ -340,11 +343,12 @@ export const initSocket = (server: HttpServer): Server => {
             roomSockets.add(socket.id)
             connectedUsers.set(socket.id, newUser)
             
-            if (isRoomCreator) {
+            if (shouldBeHost) {
                 roomHosts.set(roomId, socket.id)
+                console.log(`👑 ${userName} (${socket.id}) is now the host of room ${roomId}`)
             }
 
-            // 1. Notify existing users about the new user
+            // 1. Notify existing users about the new user with explicit host status
             socket.to(roomId).emit("user-joined", {
                 id: socket.id,
                 name: userName,
@@ -353,6 +357,14 @@ export const initSocket = (server: HttpServer): Server => {
                 isHost: newUser.isHost,
                 isRaiseHand: newUser.isRaiseHand,
             })
+            
+            // If new user is host, notify all participants about host status
+            if (newUser.isHost) {
+                io.to(roomId).emit("host-status-update", {
+                    hostId: socket.id,
+                    hostName: userName,
+                })
+            }
 
             // 2. Send current participants to the new user (exclude self)
             const currentParticipants = Array.from(roomSockets)
