@@ -659,11 +659,14 @@ export const initSocket = (server: HttpServer): Server => {
                             rooms.delete(user.roomId)
                             roomHosts.delete(user.roomId)
                             roomCreators.delete(user.roomId) // Clean up creator mapping
-                            console.log(`🏠 Room ${user.roomId} closed (empty)`)
+                            console.log(`🏠 Room ${user.roomId} closed (empty) - all data cleared`)
                         }
                     }
 
-                    // Notify others in the room
+                    // Remove user immediately BEFORE emitting to prevent race conditions
+                    connectedUsers.delete(socket.id)
+
+                    // Notify others in the room AFTER cleanup
                     socket.to(user.roomId).emit("user-left", {
                         participantId: socket.id,
                         userName: user.name,
@@ -676,9 +679,6 @@ export const initSocket = (server: HttpServer): Server => {
                     const participantCount = userRoomSockets ? userRoomSockets.size : 0
                     io.to(user.roomId).emit("participant-count", participantCount)
                     console.log(`👋 ${user.name} left room: ${user.roomId} (${participantCount} remaining)`)
-
-                    // Remove user immediately to prevent duplicates on rejoin
-                    connectedUsers.delete(socket.id)
                 }
                 connectionHealth.delete(socket.id)
             } catch (error) {
