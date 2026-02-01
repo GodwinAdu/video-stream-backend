@@ -335,15 +335,41 @@ export const initSocket = (server: HttpServer): Server => {
 
             socket.join(roomId)
             
-            // CRITICAL: Double-check that old sessions are completely removed from room
-            const oldSessionIds = Array.from(userSessions.get(userName) || [])
-            oldSessionIds.forEach(oldId => {
-                if (oldId !== socket.id && roomSockets.has(oldId)) {
-                    console.warn(`⚠️ Found stale session ${oldId} still in room, removing...`)
-                    roomSockets.delete(oldId)
-                    connectedUsers.delete(oldId)
+            // CRITICAL: Clean up ANY disconnected or duplicate sockets in the room
+            // This handles network disconnections where socket.disconnect wasn't called
+            const socketsToRemove: string[] = []
+            roomSockets.forEach(socketId => {
+                // Check if socket is actually connected
+                const existingSocket = io.sockets.sockets.get(socketId)
+                const existingUser = connectedUsers.get(socketId)
+                
+                // Remove if: socket doesn't exist, socket is disconnected, or it's an old session of same user
+                if (!existingSocket || !existingSocket.connected || 
+                    (existingUser && existingUser.name === userName && socketId !== socket.id)) {
+                    console.warn(`⚠️ Removing stale/disconnected socket ${socketId} (${existingUser?.name || 'unknown'}) from room ${roomId}`)
+                    socketsToRemove.push(socketId)
                 }
             })
+            
+            // Remove all stale sockets
+            socketsToRemove.forEach(socketId => {
+                roomSockets.delete(socketId)
+                connectedUsers.delete(socketId)
+                connectionHealth.delete(socketId)
+                
+                // Notify others that this user left
+                const user = connectedUsers.get(socketId)
+                socket.to(roomId).emit("user-left", {
+                    participantId: socketId,
+                    userName: user?.name || 'Unknown',
+                    timestamp: getCurrentTimestamp(),
+                    reason: "stale-connection",
+                })
+            })
+            
+            if (socketsToRemove.length > 0) {
+                console.log(`🧹 Cleaned up ${socketsToRemove.length} stale connections from room ${roomId}`)
+            }
             
             // Determine host status:
             // 1. If user is the room creator (userId matches), they become host
