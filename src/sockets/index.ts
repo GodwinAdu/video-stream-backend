@@ -292,13 +292,15 @@ export const initSocket = (server: HttpServer): Server => {
                         // Clean up old session IMMEDIATELY before disconnect
                         const oldUser = connectedUsers.get(oldId)
                         if (oldUser) {
-                            // Remove from room
+                            // Remove from room FIRST
                             const oldRoomSockets = rooms.get(oldUser.roomId)
                             if (oldRoomSockets) {
                                 oldRoomSockets.delete(oldId)
+                                console.log(`🗑️ Removed ${oldId} from room ${oldUser.roomId}, remaining: ${oldRoomSockets.size}`)
                             }
                             // Remove from connectedUsers
                             connectedUsers.delete(oldId)
+                            console.log(`🗑️ Removed ${oldId} from connectedUsers`)
                             // Remove from connectionHealth
                             connectionHealth.delete(oldId)
                             
@@ -309,17 +311,20 @@ export const initSocket = (server: HttpServer): Server => {
                                 timestamp: getCurrentTimestamp(),
                                 reason: "duplicate-session",
                             })
+                            console.log(`📢 Emitted user-left for ${oldId} to room ${oldUser.roomId}`)
                         }
                         
                         // Now disconnect the socket
                         const oldSocket = io.sockets.sockets.get(oldId)
                         if (oldSocket) {
                             oldSocket.disconnect(true)
+                            console.log(`🔌 Disconnected old socket ${oldId}`)
                         }
                     }
                 })
                 // Clear the session set
                 existingSessions.clear()
+                console.log(`✅ Cleared all sessions for ${userName}`)
             }
 
             // Add new session
@@ -329,6 +334,16 @@ export const initSocket = (server: HttpServer): Server => {
             userSessions.get(userName)!.add(socket.id)
 
             socket.join(roomId)
+            
+            // CRITICAL: Double-check that old sessions are completely removed from room
+            const oldSessionIds = Array.from(userSessions.get(userName) || [])
+            oldSessionIds.forEach(oldId => {
+                if (oldId !== socket.id && roomSockets.has(oldId)) {
+                    console.warn(`⚠️ Found stale session ${oldId} still in room, removing...`)
+                    roomSockets.delete(oldId)
+                    connectedUsers.delete(oldId)
+                }
+            })
             
             // Determine host status:
             // 1. If user is the room creator (userId matches), they become host
